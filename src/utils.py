@@ -77,6 +77,7 @@ def get_gnn_embeddings(gnn_model, dataCenter, ds):
     print('Embeddings loaded.')
     return embs.detach()
 
+
 def train_classification(dataCenter, graphSage, classification, ds, device, max_vali_f1, name, epochs=800):
 	print('Training Classification ...')
 	c_optimizer = torch.optim.SGD(classification.parameters(), lr=0.5)
@@ -109,6 +110,71 @@ def train_classification(dataCenter, graphSage, classification, ds, device, max_
 
 		max_vali_f1 = evaluate(dataCenter, ds, graphSage, classification, device, max_vali_f1, name, epoch)
 	return classification, max_vali_f1
+
+def apply_unsup_training(dataCenter, ds, model, unsupervised_loss, b_sz, unsup_loss, device):
+	""" Adapted from apply_model function, trains an unsupervised graphSAGE model
+		output: trained model, average loss
+	"""
+	test_nodes = getattr(dataCenter, ds+'_test')
+	val_nodes = getattr(dataCenter, ds+'_val')
+	train_nodes = getattr(dataCenter, ds+'_train')
+
+	if unsup_loss == 'margin':
+		num_neg = 6
+	elif unsup_loss == 'normal':
+		num_neg = 100
+	else:
+		print("unsup_loss can be only 'margin' or 'normal'.")
+		sys.exit(1)
+
+	train_nodes = shuffle(train_nodes)
+
+	params = []
+	
+	for param in model.parameters():
+		if param.requires_grad:
+			params.append(param)
+
+	optimizer = torch.optim.SGD(params, lr=0.7)
+	optimizer.zero_grad()
+	
+	model.zero_grad()
+
+	batches = math.ceil(len(train_nodes) / b_sz)
+	avg_loss = 0
+	visited_nodes = set()
+	for index in range(batches):
+		nodes_batch = train_nodes[index*b_sz:(index+1)*b_sz]
+
+		# extend nodes batch for unspervised learning
+		# no conflicts with supervised learning
+		nodes_batch = np.asarray(list(unsupervised_loss.extend_nodes(nodes_batch, num_neg=num_neg)))
+		visited_nodes |= set(nodes_batch)
+
+		# feed nodes batch to the graphSAGE
+		# returning the nodes embeddings
+		embs_batch = model(nodes_batch)
+
+		if unsup_loss == 'margin':
+			loss_net = unsupervised_loss.get_loss_margin(embs_batch, nodes_batch)
+		elif unsup_loss == 'normal':
+			loss_net = unsupervised_loss.get_loss_sage(embs_batch, nodes_batch)
+		loss = loss_net
+		avg_loss += loss_net.item()
+
+		print('Step [{}/{}], Loss: {:.4f}, Dealed Nodes [{}/{}] '.format(index+1, batches, loss.item(), len(visited_nodes), len(train_nodes)))
+		loss.backward()
+		
+		nn.utils.clip_grad_norm_(model.parameters(), 5)
+		optimizer.step()
+
+		optimizer.zero_grad()
+		
+		model.zero_grad()
+	avg_loss /= batches
+	return model, avg_loss
+
+
 
 def apply_model(dataCenter, ds, graphSage, classification, unsupervised_loss, b_sz, unsup_loss, device, learn_method):
 	test_nodes = getattr(dataCenter, ds+'_test')

@@ -1,8 +1,9 @@
 import sys
 import os
-
+import re
 from collections import defaultdict
 import numpy as np
+import pandas as pd
 
 class DataCenter(object):
 	"""docstring for DataCenter"""
@@ -96,12 +97,54 @@ class DataCenter(object):
 			setattr(self, dataSet+'_labels', labels)
 			setattr(self, dataSet+'_adj_lists', adj_lists)
 
+		elif dataSet == 'icd10':
+			icd10_feats_file = self.config['file_path.icd10_feats']
+			icd10_edgelist_file = self.config['file_path.icd10_edgelist']
+			icd10_label_file = self.config['file_path.icd10_labels']
+
+			df_feat = pd.read_csv(icd10_feats_file)
+			emb_cols = [x for x in df_feat.columns if bool(re.search('emb_', x))]
+			df_feat = df_feat[emb_cols]
+			feat_data = df_feat.to_numpy()
+			
+			# df_lbl = pd.read_csv(icd10_label_file)
+			# df_lbl.loc[(df_lbl['RESOLUTION CODE']!=1), 'RESOLUTION CODE'] = 0
+			# labels = df_lbl[['RESOLUTION CODE']].to_numpy(dtype=np.int64).flatten()
+			# print(labels)
+
+			# df_lbl = pd.read_csv(icd10_label_file)
+			# df_lbl.loc[(df_lbl['RESOLUTION CODE']!=1), 'RESOLUTION CODE'] = 0
+			# labels = df_lbl[['RESOLUTION CODE']].to_numpy(dtype=np.int64).flatten()
+			# print(labels)
+
+			adj_lists = defaultdict(set)
+			df_edgelist = pd.read_csv(icd10_edgelist_file)
+			for parent, child in zip(df_edgelist['parent'].tolist(), df_edgelist['child'].tolist()):
+				adj_lists[child].add(parent)
+				adj_lists[parent].add(child)
+			# print(len(feat_data),len(labels))
+			# assert len(feat_data) == len(labels)
+
+			test_indexs, val_indexs, train_indexs = self._split_data(feat_data.shape[0], test_split=0, val_split=0)
+			
+			setattr(self, dataSet+'_test', test_indexs)
+			setattr(self, dataSet+'_val', val_indexs)
+			setattr(self, dataSet+'_train', train_indexs)
+
+			setattr(self, dataSet+'_feats', feat_data)
+			# setattr(self, dataSet+'_labels', labels)
+			setattr(self, dataSet+'_adj_lists', adj_lists)
 
 	def _split_data(self, num_nodes, test_split = 3, val_split = 6):
 		rand_indices = np.random.permutation(num_nodes)
-
-		test_size = num_nodes // test_split
-		val_size = num_nodes // val_split
+		if test_split==0:
+			test_size = 0
+		else:
+			test_size = num_nodes // test_split
+		if val_split==0:
+			val_size = 0
+		else:
+			val_size = num_nodes // val_split
 		train_size = num_nodes - (test_size + val_size)
 
 		test_indexs = rand_indices[:test_size]

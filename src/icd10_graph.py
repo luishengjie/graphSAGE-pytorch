@@ -95,7 +95,7 @@ def encode_icd_edges(edgelist):
     le_mapper = dict(zip(le.classes_, le.transform(le.classes_)))
 
     df = pd.DataFrame(edgelist)
-    df.columns = ['child', 'parent']
+    df.columns = ['parent', 'child']
     df['child'] = le.transform(df['child'].tolist())
     df['parent'] = le.transform(df['parent'].tolist())
 
@@ -126,7 +126,7 @@ def get_roman_nums(num):
                 break
     return "".join([x for x in get_roman_num(num)])
 
-def generate_edgelist():
+def generate_edgelist(directed=False):
     icd_edges = []
     leaf_nodes = []
     def get_child(keyword):
@@ -138,6 +138,8 @@ def generate_edgelist():
             # len(code) > 0
             for c in code:
                 icd_edges.append([keyword, c])
+                if not directed:
+                    icd_edges.append([c, keyword])
                 get_child(c)
 
     # There are 22 chapters in ICD10
@@ -148,13 +150,103 @@ def generate_edgelist():
     
     return icd_edges, leaf_nodes
 
+def generate_labels_ccs(mapper, raw_ccs_fp):
+    """ Input: Raw CCS file
+        Output: dataframe with icd, lbl, lbl_raw
+    """
+    df_ccs = pd.read_csv(raw_ccs_fp)
+    df_ccs.rename(columns={"'ICD-10-CM CODE'": 'icd', 
+                            "'Default CCSR CATEGORY IP": 'ccs', 
+                            "'ICD-10-CM CODE DESCRIPTION'": 'icd_desc'}, 
+                            inplace=True)
+    df_ccs = df_ccs[['icd', 'ccs']]
+    df_ccs['icd'] = df_ccs['icd'].str.replace("'", '')
+    df_ccs['ccs'] = df_ccs['ccs'].str.replace("'", '')
+    df_ccs['ccs'] = df_ccs['ccs'].str.strip()
+    df_ccs.rename(columns={'ccs': 'lbl_raw'}, inplace=True)
+    le = preprocessing.LabelEncoder()
+    unique_ccs = df_ccs['lbl_raw'].unique().tolist()
+    le.fit(unique_ccs)
+    # le_mapper = dict(zip(le.classes_, le.transform(le.classes_)))
+    df_ccs['lbl'] =le.transform(df_ccs['lbl_raw'].tolist())
+    return df_ccs
+
+
+
+def generate_labels(mapper, raw_lbl_fp='raw/july_2021_icd10_labcodelist.csv'):
+    """ Generate label based on ICD-10-CM codes covered by Medicare.
+        Source: https://www.cms.gov/Medicare/Coverage/CoverageGenInfo/LabNCDsICD10; July 2021 Lab Code List ICD-10 (ZIP)
+    """
+    df_lab = pd.read_csv(raw_lbl_fp)
+    df_lab['RESOLUTION CODE'] = df_lab['RESOLUTION CODE'].str.replace('*', '')
+    df_lab['ICD-10'] = df_lab['ICD-10'].str.replace('*', '')
+    df_lab['ICD-10'] = df_lab['ICD-10'].apply(split_icdcodes)
+    df_lab = df_lab[['ICD-10', 'RESOLUTION CODE']].explode('ICD-10')
+
+    mapper00 = {k.replace('.', ''):v for k,v in mapper.items()}
+    df_lab = df_lab.loc[(df_lab['ICD-10'].isin(mapper00.keys()))]
+
+    missing_icds = []
+    for k in mapper00.keys():
+        if k not in df_lab['ICD-10'].unique().tolist():
+            missing_icds.append([k, -1])
+    df_missing = pd.DataFrame(missing_icds)
+    df_missing.columns = ['ICD-10', 'RESOLUTION CODE']
+    df_lab = pd.concat([df_lab, df_missing], axis=0)
+    
+    df_lab['RESOLUTION CODE'] = df_lab['RESOLUTION CODE'].astype(int)
+    df_lab['ICD-10'] = df_lab['ICD-10'].map(mapper00)
+    df_lab.drop_duplicates(subset=['ICD-10'], keep='first', inplace=True)
+    df_lab.sort_values(by=['ICD-10'], inplace=True)
+    df_lab.reset_index(drop=True, inplace=True)
+    
+    return df_lab
+
+
+def get_similar_prefix(X, Y):
+    idx = 0
+    for x, y in zip(X, Y):
+        if x==y:
+            idx += 1
+        else:
+            break
+    return idx
+
+def split_icdcodes(icdcodes):
+    if '-' in icdcodes:
+        [first_icd, last_icd] = icdcodes.split('-')
+        pre_idx = get_similar_prefix(first_icd, last_icd)
+
+        prefix00 = first_icd[:pre_idx]
+        prefix01 = first_icd[:pre_idx]
+        assert prefix00==prefix01
+
+        first_suffix = int(first_icd[pre_idx:])
+        last_suffix = int(last_icd[pre_idx:])
+
+        split_icdcodes = [f"{prefix00}{i}" for i in range(first_suffix, last_suffix+1)]
+        return split_icdcodes
+    else:
+        return [icdcodes]
+
 
 def main(args):
     
     icd_edges, leaf_nodes = generate_edgelist()
+
+    df_leaf = pd.DataFrame({'icd': leaf_nodes})
+
     # Generate DataFrame with encoded ICD10 edgelist
     df_encd_edgelist, encd_mapper = encode_icd_edges(icd_edges.copy())
     df_icd_emb = generate_icd_desc_from_edgelist(icd_edges.copy(), args)
+    df_icd_emb['icdcode'] = df_icd_emb['icdcode'].map(encd_mapper)
+    df_icd_emb.sort_values(by=['icdcode'], ascending=True)
+    # df_lbl = generate_labels(encd_mapper, raw_lbl_fp='raw/july_2021_icd10_labcodelist.csv')
+    # Load Label
+    lbl_fp = os.path.join(args.lbldir, 'DXCCSR_v2021-2.csv')
+    df_lbl = generate_labels_ccs(encd_mapper, raw_ccs_fp=lbl_fp)
+
+
 
     # Save Results
     # If dir does not exists, create new directory
@@ -164,22 +256,32 @@ def main(args):
     edgelist_outpath = os.path.join(args.outdir, 'edgelist.csv')
     mapper_outpath = os.path.join(args.outdir, 'encdmapper.pickle')
     emb_outpath = os.path.join(args.outdir, 'embs.csv')
+    lbl_outpath = os.path.join(args.outdir, 'lbls.csv')
+    leaf_outpath = os.path.join(args.outdir, 'lbls.csv')
     
     df_encd_edgelist.to_csv(edgelist_outpath, index=False)
     print(f"Edgelist saved: {edgelist_outpath}")
 
     df_icd_emb.to_csv(emb_outpath, index=False)
-    print(f"Edgelist saved: {emb_outpath}")
+    print(f"Embeddings saved: {emb_outpath}")
 
     with open(mapper_outpath, 'wb') as fp:
         pickle.dump(encd_mapper, fp, protocol=pickle.HIGHEST_PROTOCOL)
     print(f"Encoding Mapper saved: {mapper_outpath}")
+
+    df_lbl.to_csv(lbl_outpath, index=False)
+    print(f"Labels saved: {lbl_outpath}")
+
+    df_leaf.to_csv(leaf_outpath, index=False)
+    print(f"Leaf Nodes saved: {leaf_outpath}")
+
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='pytorch version of GraphSAGE')
     # parser.add_argument('--seed', type=int, default=824)
     parser.add_argument('--outdir', type=str, default='icd10-data')
+    parser.add_argument('--lbldir', type=str, default='ICD10_CCS')
     parser.add_argument('--min-count', type=int, default=1)
     parser.add_argument('--window', type=int, default=5)
     parser.add_argument('--size', type=int, default=64)

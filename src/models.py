@@ -48,7 +48,7 @@ class UnsupervisedLoss(object):
 		super(UnsupervisedLoss, self).__init__()
 		self.Q = 10
 		self.N_WALKS = 6
-		self.WALK_LEN = 1
+		self.WALK_LEN = 3
 		self.N_WALK_LEN = 5
 		self.MARGIN = 3
 		self.adj_lists = adj_lists

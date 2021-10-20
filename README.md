@@ -48,5 +48,8 @@ python -m src.main --epochs 50 --cuda --learn_method unsup
 To generate the edgelist for the ICD10 ontology, run the following script:
 ```
 python src/icd10_graph.py --outdir icd10-data
-```
 
+```
+```
+python -m src.main --epochs 3 --learn_method unsup --dataSet='icd10'                                                      
+```
